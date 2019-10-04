@@ -8,7 +8,7 @@ exit $1
 }
 
 # Name of PAPER server
-catcherhost=hera-sn1
+catcherhost=px1
 
 # Stop hashpipe-redis gateways
 echo "stopping hashpipe-redis gateways"

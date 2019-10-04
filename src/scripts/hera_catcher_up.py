@@ -8,7 +8,7 @@ import numpy as np
 
 perf_tweaker = 'tweak-perf-sn.sh'
 init = 'hera_catcher_init.sh'
-python_source_cmd = ['source', '~/hera-venv/bin/activate']
+python_source_cmd = ['source', '~/.venv/bin/activate']
 template_cmd = ['hera_make_hdf5_template.py']
 
 def run_on_hosts(hosts, cmd, user=None, wait=True):
@@ -52,7 +52,7 @@ if args.bda:
    init_args += ['-a']
 
 # Start Catcher
-run_on_hosts([args.host], ['cd', '/data;', init] + init_args + ['0'], wait=True)
+run_on_hosts([args.host], ['cd', '/tmp;', init] + init_args + ['0'], wait=True)
 time.sleep(15)
 
 # Start hashpipe<->redis gateways
@@ -70,7 +70,7 @@ time.sleep(10)
 
 # Generate the meta-data template
 if args.bda:
-   run_on_hosts([args.host], python_source_cmd + [';'] + ['hera_make_hdf5_template_bda.py'] + ['c', '-r', args.hdf5template], wait=True)
+   run_on_hosts([args.host], python_source_cmd + [';'] + ['hera_make_hdf5_template_bda.py'] + [args.hdf5template], wait=True)
 else:
    run_on_hosts([args.host], python_source_cmd + [';'] + template_cmd + ['-c', '-r', args.hdf5template], wait=True)
 
@@ -96,18 +96,22 @@ r.publish(pubchan, 'MISSEDPK=0')
 # If BDA is requested, write distribution to redis
 if args.bda:
    baselines = {}
+   Nants = 0
    for n in range(4):
        baselines[n] = []
    
    bdaconfig = np.loadtxt(args.bdaconfig, dtype=np.int)
-   for i,t in enumerate(bdaconfig[:,2]):
+   for ant0,ant1,t in bdaconfig:
        if (t==0): continue
        n = int(np.log(t)/np.log(2))
        if (n==4): n = 3
-       baselines[n].append((bdaconfig[i,0], bdaconfig[i,1]))
+       baselines[n].append((ant0, ant1))
+       if (ant0 == ant1):
+          Nants += 1
    
    for i in range(4):
        r.publish(pubchan, 'NBL%dSEC=%d'  % (2**(i+1), len(baselines[i])))
+   r.publish(pubchan, 'BDANANT=%d'  % Nants)
    
    time.sleep(0.1)
 
