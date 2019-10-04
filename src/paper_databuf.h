@@ -408,6 +408,38 @@ typedef struct hera_catcher_bda_input_databuf {
   hera_catcher_bda_input_block_t block[CATCHER_N_BLOCKS];
 } hera_catcher_bda_input_databuf_t;
 
+/* 
+ * CATCHER - autocorr buffers
+ */
+
+#define BYTES_AUTOCORR_BLK  (N_CHAN_TOTAL * N_ANTS * N_STOKES * 8L)
+#define AUTOCORR_N_BLOCKS    2
+
+#define hera_catcher_autocorr_databuf_idx32(a) \
+      ((a)*N_CHAN_TOTAL*N_STOKES*2L)
+
+typedef struct hera_catcher_autocorr_header{
+  uint64_t num_ants;
+  double julian_time;
+  uint8_t ant[N_ANTS]; //flag to show if this has been updated
+} hera_catcher_autocorr_header_t;
+
+typedef uint8_t hera_catcher_autocorr_header_cache_alignment[
+  CACHE_ALIGNMENT - (sizeof(hera_catcher_autocorr_header_t) % CACHE_ALIGNMENT)
+];
+
+typedef struct hera_catcher_autocorr_block {
+  hera_catcher_autocorr_header_t header;
+  hera_catcher_autocorr_header_cache_alignment padding;
+  uint32_t data[BYTES_AUTOCORR_BLK/sizeof(uint32_t)];
+} hera_catcher_autocorr_block_t;
+
+typedef struct hera_catcher_autocorr_databuf {
+  hashpipe_databuf_t header;
+  hashpipe_databuf_cache_alignment padding;
+  hera_catcher_autocorr_block_t block[AUTOCORR_N_BLOCKS];
+} hera_catcher_autocorr_databuf_t;
+
 
 /*
  * INPUT BUFFER FUNCTIONS
@@ -539,6 +571,49 @@ int hera_catcher_bda_input_databuf_set_free(hera_catcher_bda_input_databuf_t *d,
 
 int hera_catcher_bda_input_databuf_set_filled(hera_catcher_bda_input_databuf_t *d, int block_id);
 
+
+/* 
+ * CATCHER AUTOCORR BUFFER FUNCTIONS
+ */
+
+hashpipe_databuf_t *hera_catcher_autocorr_databuf_create(int instance_id, int databuf_id);
+
+static inline hera_catcher_autocorr_databuf_t *hera_catcher_autocorr_databuf_attach(int instance_id, int databuf_id)
+{
+    return (hera_catcher_autocorr_databuf_t *)hashpipe_databuf_attach(instance_id, databuf_id);
+}
+
+static inline int hera_catcher_autocorr_databuf_detach(hera_catcher_autocorr_databuf_t *d)
+{
+    return hashpipe_databuf_detach((hashpipe_databuf_t *)d);
+}
+
+static inline void hera_catcher_autocorr_databuf_clear(hera_catcher_autocorr_databuf_t *d)
+{
+    hashpipe_databuf_clear((hashpipe_databuf_t *)d);
+}
+
+static inline int hera_catcher_autocorr_databuf_block_status(hera_catcher_autocorr_databuf_t *d, int block_id)
+{
+    return hashpipe_databuf_block_status((hashpipe_databuf_t *)d, block_id);
+}
+
+static inline int hera_catcher_autocorr_databuf_total_status(hera_catcher_autocorr_databuf_t *d)
+{
+    return hashpipe_databuf_total_status((hashpipe_databuf_t *)d);
+}
+
+int hera_catcher_autocorr_databuf_wait_free(hera_catcher_autocorr_databuf_t *d, int block_id);
+
+int hera_catcher_autocorr_databuf_busywait_free(hera_catcher_autocorr_databuf_t *d, int block_id);
+
+int hera_catcher_autocorr_databuf_wait_filled(hera_catcher_autocorr_databuf_t *d, int block_id);
+
+int hera_catcher_autocorr_databuf_busywait_filled(hera_catcher_autocorr_databuf_t *d, int block_id);
+
+int hera_catcher_autocorr_databuf_set_free(hera_catcher_autocorr_databuf_t *d, int block_id);
+
+int hera_catcher_autocorr_databuf_set_filled(hera_catcher_autocorr_databuf_t *d, int block_id);
 
 /*
  * GPU INPUT BUFFER FUNCTIONS

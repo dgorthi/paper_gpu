@@ -654,6 +654,7 @@ static void *run(hashpipe_thread_args_t * args)
     // Local aliases to shorten access to args fields
     // Our input buffer is a hera_catcher_bda_input_databuf
     hera_catcher_bda_input_databuf_t *db_in = (hera_catcher_bda_input_databuf_t *)args->ibuf;
+    hera_catcher_autocorr_databuf_t *db_out = (hera_catcher_autocorr_databuf_t *)args->obuf;
     hashpipe_status_t st = args->st;
     const char * status_key = args->thread_desc->skey;
 
@@ -690,6 +691,7 @@ static void *run(hashpipe_thread_args_t * args)
     uint32_t trigger = 0;
     char tag[128];
     uint64_t baseline_dist[N_BDABUF_BINS];
+    uint64_t Nants;
 
     // Init status variables
     hashpipe_status_lock_safe(&st);
@@ -724,15 +726,20 @@ static void *run(hashpipe_thread_args_t * args)
 
     /* Loop(s) */
     int32_t *db_in32;
+    hera_catcher_bda_input_header_t header;
     int rv;
     int curblock_in=0;
+    int curblock_out = 0;
     float file_start_t, file_stop_t, file_duration; // time from bcnt
     int64_t file_obs_id, file_nblts=0, file_nts=0;
     int32_t curr_file_bcnt = -1;
     uint32_t bctr, strt_bcnt, stop_bcnt, break_bcnt;        // bcnt variable
-    int b;
+    int i,b;
     unsigned int nbls, block_offset;
     uint32_t file_offset;
+    uint32_t offset_in, offset_out; // for autocorrs
+    int auto_ants_filled = 0;
+    uint16_t ant;
     herr_t status;
 
     hdf5_id_t sum_file;
@@ -826,9 +833,10 @@ static void *run(hashpipe_thread_args_t * args)
           file_cnt = 0;
           hashpipe_status_lock_safe(&st);
           hputu4(st.buf, "TRIGGER", 0);
-          
+            
           // Get baseline distribution from redis -- this has to be done here
           // to ensure that redis database is updated before reading.
+          hgetu8(st.buf,"BDANANT", &Nants);
           hgetu8(st.buf,"NBL2SEC", &baseline_dist[0]);
           hgetu8(st.buf,"NBL4SEC", &baseline_dist[1]);
           hgetu8(st.buf,"NBL8SEC", &baseline_dist[2]);
@@ -880,27 +888,29 @@ static void *run(hashpipe_thread_args_t * args)
         // data by incrementing NFILES without retriggering.
         idle = 0;
 
-        // Got a new data block, update status
-        hashpipe_status_lock_safe(&st);
-        hputs(st.buf, status_key, "writing");
-        hputi4(st.buf, "DISKBKIN", curblock_in);
-        hputu8(st.buf, "DISKMCNT", db_in->block[curblock_in].header.mcnt[0]);
-        hputu8(st.buf, "DISKBCNT", db_in->block[curblock_in].header.bcnt[0]);
-        hashpipe_status_unlock_safe(&st);
-
         // Start writing files!
         // A file is defined as bcnts_per_file number of bcnts. If a bcnt belonging
         // to a new intergation arrives, close the old file and start a new file.
 
         clock_gettime(CLOCK_MONOTONIC, &start);
         db_in32 = (int32_t *)db_in->block[curblock_in].data;
+        header = db_in->block[curblock_in].header;
+
+        // Got a new data block, update status
+        hashpipe_status_lock_safe(&st);
+        hputs(st.buf, status_key, "writing");
+        hputi4(st.buf, "DISKBKIN", curblock_in);
+        hputu8(st.buf, "DISKMCNT", header.mcnt[0]);
+        hputu8(st.buf, "DISKBCNT", header.bcnt[0]);
+        hashpipe_status_unlock_safe(&st);
+
              
         for (bctr=0 ; bctr< BASELINES_PER_BLOCK; bctr += N_BL_PER_WRITE){
 
           // We write N_BL_PER_WRITE at a time.
           // these variables store the baseline numbers for the start and end of these blocks
-          strt_bcnt = db_in->block[curblock_in].header.bcnt[bctr];
-          stop_bcnt = db_in->block[curblock_in].header.bcnt[bctr+N_BL_PER_WRITE-1]; 
+          strt_bcnt = header.bcnt[bctr];
+          stop_bcnt = header.bcnt[bctr+N_BL_PER_WRITE-1]; 
 
           clock_gettime(CLOCK_MONOTONIC, &t_start);
           compute_sum_diff(db_in32, bl_buf_sum, bl_buf_diff, bctr);
@@ -932,10 +942,10 @@ static void *run(hashpipe_thread_args_t * args)
                 clock_gettime(CLOCK_MONOTONIC, &w_stop);
 
                 for(b=0; b< N_BL_PER_WRITE; b++){
-                   ant_0_array[file_offset+b]    = (int)db_in->block[curblock_in].header.ant_pair_0[bctr+b];
-                   ant_1_array[file_offset+b]    = (int)db_in->block[curblock_in].header.ant_pair_1[bctr+b];
+                   ant_0_array[file_offset+b]    = (int)header.ant_pair_0[bctr+b];
+                   ant_1_array[file_offset+b]    = (int)header.ant_pair_1[bctr+b];
 
-                   time_array_buf[file_offset+b] = compute_jd_from_mcnt(db_in->block[curblock_in].header.mcnt[bctr+b], sync_time,  
+                   time_array_buf[file_offset+b] = compute_jd_from_mcnt(header.mcnt[bctr+b], sync_time,  
                                                    integration_time_buf[file_offset+b]);
                 }
                 
@@ -993,9 +1003,9 @@ static void *run(hashpipe_thread_args_t * args)
                     clock_gettime(CLOCK_MONOTONIC, &w_stop);
 
                     for(b=0; b< nbls; b++){
-                       ant_0_array[file_offset+b]    = (int)db_in->block[curblock_in].header.ant_pair_0[bctr+b];
-                       ant_1_array[file_offset+b]    = (int)db_in->block[curblock_in].header.ant_pair_1[bctr+b];
-                       time_array_buf[file_offset+b] = compute_jd_from_mcnt(db_in->block[curblock_in].header.mcnt[bctr+b], sync_time, 
+                       ant_0_array[file_offset+b]    = (int)header.ant_pair_0[bctr+b];
+                       ant_1_array[file_offset+b]    = (int)header.ant_pair_1[bctr+b];
+                       time_array_buf[file_offset+b] = compute_jd_from_mcnt(header.mcnt[bctr+b], sync_time, 
                                                        integration_time_buf[file_offset+b]);
                     }
                     file_nblts += nbls;
@@ -1039,7 +1049,7 @@ static void *run(hashpipe_thread_args_t * args)
                  if (file_cnt >= nfiles) {
                      fprintf(stdout, "Catcher has written %d file and is going to sleep\n", file_cnt);
                      if(hera_catcher_bda_input_databuf_set_free(db_in, curblock_in) != HASHPIPE_OK) {
-                         hashpipe_error(__FUNCTION__, "error marking databuf %d free", curblock_in);
+                         hashpipe_error(__FUNCTION__, "error marking catcher bda input databuf %d free", curblock_in);
                          pthread_exit(NULL);
                      }
                      curblock_in = (curblock_in + 1) % CATCHER_N_BLOCKS;
@@ -1062,8 +1072,8 @@ static void *run(hashpipe_thread_args_t * args)
              curr_file_bcnt = break_bcnt;
              block_offset = bctr + break_bcnt - strt_bcnt;
              fprintf(stdout, "Curr file bcnt: %d\n", curr_file_bcnt);
-             fprintf(stdout, "Curr file mcnt: %ld\n", db_in->block[curblock_in].header.mcnt[block_offset]);
-             gps_time = mcnt2time(db_in->block[curblock_in].header.mcnt[block_offset], sync_time);
+             fprintf(stdout, "Curr file mcnt: %ld\n", header.mcnt[block_offset]);
+             gps_time = mcnt2time(header.mcnt[block_offset], sync_time);
              julian_time = 2440587.5 + (gps_time / (double)(86400.0)); 
              file_start_t = gps_time;
              file_obs_id = (int64_t)gps_time;
@@ -1102,9 +1112,9 @@ static void *run(hashpipe_thread_args_t * args)
                 file_offset = break_bcnt - curr_file_bcnt;
 
                 for(b=0; b< nbls; b++){
-                   ant_0_array[file_offset+b]    = (int)db_in->block[curblock_in].header.ant_pair_0[block_offset+b];
-                   ant_1_array[file_offset+b]    = (int)db_in->block[curblock_in].header.ant_pair_1[block_offset+b];
-                   time_array_buf[file_offset+b] = compute_jd_from_mcnt(db_in->block[curblock_in].header.mcnt[block_offset+b], sync_time, 
+                   ant_0_array[file_offset+b]    = (int)header.ant_pair_0[block_offset+b];
+                   ant_1_array[file_offset+b]    = (int)header.ant_pair_1[block_offset+b];
+                   time_array_buf[file_offset+b] = compute_jd_from_mcnt(header.mcnt[block_offset+b], sync_time, 
                                                    integration_time_buf[file_offset+b]);
                 }
                 
@@ -1132,7 +1142,57 @@ static void *run(hashpipe_thread_args_t * args)
                 max_w_ns = MAX(w_ns, max_w_ns);
              }
           }
-        } 
+        }
+
+        /* Copy auto correlations to autocorr buffer */
+
+        fprintf (stderr, "Processing auto correlations\n");
+        if (auto_ants_filled == 0){
+           fprintf(stderr, "Waiting for a free databuf\n");
+           // Wait for next buffer to get free
+           while ((rv= hera_catcher_autocorr_databuf_wait_free(db_out, curblock_out)) != HASHPIPE_OK) {
+               if (rv==HASHPIPE_TIMEOUT) {
+                   hashpipe_status_lock_safe(&st);
+                   hputs(st.buf, status_key, "blocked redis thread");
+                   hashpipe_status_unlock_safe(&st);
+                   continue;
+               } else {
+                   hashpipe_error(__FUNCTION__, "error waiting for free databuf");
+                   pthread_exit(NULL);
+                   break;
+               }
+           }
+           for (i=0; i<N_ANTS; i++){
+               db_out->block[curblock_out].header.ant[i] = 0;
+           }
+        }
+
+        for (bctr=0; bctr < BASELINES_PER_BLOCK; bctr++){
+            ant = header.ant_pair_0[bctr];
+            if((header.ant_pair_0[bctr] == header.ant_pair_1[bctr]) && (db_out->block[curblock_out].header.ant[ant]==0)){
+               offset_in = hera_catcher_bda_input_databuf_by_bcnt_idx32(bctr, 0);
+               offset_out = hera_catcher_autocorr_databuf_idx32(ant);
+               memcpy((db_out->block[curblock_out].data + offset_out), (db_in32 + offset_in), N_CHAN_TOTAL*N_STOKES*2*sizeof(uint32_t));
+               auto_ants_filled++;
+               db_out->block[curblock_out].header.ant[ant] = 1;
+            } 
+        }
+
+        fprintf(stderr, "Autocorr: ants filled: %d\n", auto_ants_filled);
+        // If you have autocorrs of all antennas
+        // Mark output block as full and advance
+        if (auto_ants_filled == Nants){
+           fprintf(stderr, "Marking autocorr databuf filled..");
+           // Update databuf headers
+           db_out->block[curblock_out].header.num_ants = Nants;
+           db_out->block[curblock_out].header.julian_time = compute_jd_from_mcnt(header.mcnt[bctr-1], sync_time, 2);
+           if (hera_catcher_autocorr_databuf_set_filled(db_out, curblock_out) != HASHPIPE_OK) {
+              hashpipe_error(__FUNCTION__, "error marking out databuf %d full", curblock_out);
+              pthread_exit(NULL);
+           }
+           curblock_out = (curblock_out + 1) % AUTOCORR_N_BLOCKS;
+           auto_ants_filled = 0; 
+        }
         
         clock_gettime(CLOCK_MONOTONIC, &finish);
 
@@ -1180,7 +1240,7 @@ static hashpipe_thread_desc_t hera_catcher_disk_thread_bda = {
     init: init,
     run:  run,
     ibuf_desc: {hera_catcher_bda_input_databuf_create},
-    obuf_desc: {NULL}
+    obuf_desc: {hera_catcher_autocorr_databuf_create}
 };
 
 static __attribute__((constructor)) void ctor()
